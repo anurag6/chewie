@@ -1,10 +1,10 @@
 """RADIUS Packets"""
 import copy
-import binascii
 import hashlib
 import hmac
 import struct
 
+import binascii
 from chewie.radius_attributes import ATTRIBUTE_TYPES, Attribute, MessageAuthenticator
 from chewie.radius_datatypes import Concat
 from chewie.utils import MessageParseError
@@ -53,7 +53,8 @@ class Radius:
         """
         try:
             code, packet_id, length, authenticator = struct.unpack("!BBH16s",
-                                                                   packed_message[:RADIUS_HEADER_LENGTH])
+                                                                   packed_message[
+                                                                   :RADIUS_HEADER_LENGTH])
         except struct.error as exception:
             raise MessageParseError('Unable to unpack first 20 bytes of RADIUS header') \
                 from exception
@@ -77,7 +78,7 @@ class Radius:
                                                      code=code)
             except (InvalidMessageAuthenticatorError,
                     InvalidResponseAuthenticatorError) as exception:
-                raise MessageParseError("Unable to parse Radius packet") \
+                raise MessageParseError("Unable to validate Radius packet") \
                     from exception
         raise MessageParseError("Unable to parse radius code: %d" % code)
 
@@ -124,8 +125,8 @@ class RadiusPacket(Radius):
         try:
             position = self.attributes.indexof(MessageAuthenticator.DESCRIPTION) + \
                        RADIUS_HEADER_LENGTH + Attribute.HEADER_SIZE
-        except ValueError as e:
-            print(e.message)
+        except ValueError as err:
+            print(err)
             return self.packed
 
         if secret:
@@ -184,9 +185,9 @@ class RadiusPacket(Radius):
 
             radius_packet.authenticator = request_authenticator
 
-            original_ma = message_authenticator.data_type.bytes_data
+            original_ma = message_authenticator.bytes_data
             # Replace the Original Message Authenticator
-            message_authenticator.data_type.bytes_data = bytes.fromhex(
+            message_authenticator.bytes_data = bytes.fromhex(
                 "00000000000000000000000000000000")
 
             radius_packet.pack()
@@ -266,7 +267,7 @@ class RadiusAttributesList:
         for value, list_ in attributes_to_concat.items():
             concatenated_data = b""
             for d, i in list_:
-                concatenated_data += d.data_type.bytes_data
+                concatenated_data += d.bytes_data
             concatenated_attributes.append(tuple((ATTRIBUTE_TYPES[value].parse(concatenated_data),
                                                   i)))
         # Remove old Attributes that were concatenated.
@@ -369,5 +370,5 @@ class RadiusAttributesList:
     def to_dict(self):
         ret = {}
         for a in self.attributes:
-            ret[a.DESCRIPTION] = a.data_type.data()
+            ret[a.DESCRIPTION] = a.data()
         return ret

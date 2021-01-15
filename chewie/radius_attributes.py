@@ -3,12 +3,13 @@
 # TODO could we auto generate this from the radius-types-2.csv available from iana.org?
 
 import struct
+from hashlib import md5
 
+import math
 from chewie.radius_datatypes import Concat, Enum, Integer, String, Text, Vsa
-
-
 ATTRIBUTE_TYPES = {}
 
+# TODO Fix Class Docstrings
 
 class Attribute():
     """Parent class for the Attributes."""
@@ -20,7 +21,7 @@ class Attribute():
     HEADER_SIZE = 1 + 1
 
     def __init__(self, data_type):
-        self.data_type = data_type
+        self._data_type = data_type
 
     @classmethod
     def create(cls, data):
@@ -50,7 +51,7 @@ class Attribute():
             packed attribute (including header) bytes
         """
         tl = struct.pack("!BB", self.TYPE, self.full_length())
-        v = self.data_type.pack(self.TYPE)
+        v = self._data_type.pack(self.TYPE)
         return tl + v
 
     def full_length(self):
@@ -58,7 +59,18 @@ class Attribute():
         Returns:
             length (including header).
         """
-        return self.data_type.full_length()
+        return self._data_type.full_length()
+
+    def data(self):
+        return self._data_type.data()
+
+    @property
+    def bytes_data(self):
+        return self._data_type.bytes_data
+
+    @bytes_data.setter
+    def bytes_data(self, value):
+        self._data_type.bytes_data = value
 
 
 def register_attribute_type(cls):
@@ -73,6 +85,69 @@ class UserName(Attribute):
     TYPE = 1
     DATA_TYPE = Text
     DESCRIPTION = "User-Name"
+
+
+# Experimental
+@register_attribute_type
+class UserPassword(Attribute):
+    """User-Password https://tools.ietf.org/html/rfc2865#section-5.2"""
+    TYPE = 2
+    DATA_TYPE = String
+    DESCRIPTION = "User-Password"
+
+    # TODO Move encryption / decryption to the appropriate place -
+    # cannot be in pack / unpack due to RA / secret requirements
+    @staticmethod
+    def encrypt(secret, req_authenticator, password):
+        def string_pop(s, length):
+            return s[:length], s[length:]
+
+        if type(secret) is str:
+            secret = secret.encode()
+
+        if type(req_authenticator) is int:
+            req_authenticator = req_authenticator.to_bytes(16, 'big')
+
+        BASE = 16
+        ciphertext = bytes()
+
+        padded_width = math.ceil(len(password) / BASE) * BASE
+        padded_password = password.ljust(padded_width, chr(0)).encode()
+        b_sec = md5(secret + req_authenticator).digest()
+
+        while len(padded_password) > 0:
+            p_sec, padded_password = string_pop(padded_password, BASE)
+            cipher_array = [x ^ y for x, y in zip(b_sec, p_sec)]
+            c_sec = bytes(cipher_array)
+            ciphertext += c_sec
+
+            b_sec = md5(secret + c_sec).digest()
+
+        return ciphertext
+
+    @staticmethod
+    def decrypt(secret, req_authenticator, ciphertext):
+        def string_pop(s, length):
+            return s[:length], s[length:]
+
+        if type(secret) is str:
+            secret = secret.encode()
+
+        if type(req_authenticator) is int:
+            req_authenticator = req_authenticator.to_bytes(16, 'big')
+
+        BASE = 16
+        cleartext = ""
+        b_sec = md5(secret + req_authenticator).digest()
+
+        while len(ciphertext) > 0:
+            c_sec, ciphertext = string_pop(ciphertext, BASE)
+            pass_array = [x ^ y for x, y in zip(b_sec, c_sec)]
+            p_sec = bytes(pass_array)
+            cleartext += p_sec.decode('ascii')
+
+            b_sec = md5(secret + c_sec).digest()
+        return cleartext.strip('\0')
 
 
 @register_attribute_type
@@ -223,8 +298,27 @@ class EAPMessage(Attribute):
     def pack(self):
         """Concat types need to override AttributeType.pack().
         as Concat.pack() may return multiple packed AVP (each with their own length)"""
-        return self.data_type.pack(self.TYPE)
+        return self._data_type.pack(self.TYPE)
 
+    # NOTE: Delayed imports are to avoid circular dependency chain.
+    # Should be refactored out when possible but will need to redesign the message_parser module.
+    @classmethod
+    def create(cls, data):
+        """Factory method.
+        Args:
+            data: object of python type (int, str, bytes, ...)
+        Returns:
+            Attribute subclass.
+        """
+        from chewie.message_parser import MessagePacker, EapMessage
+        if isinstance(data, EapMessage):
+            return cls(cls.DATA_TYPE(bytes_data=MessagePacker.eap_pack(data)[2]))  # pylint: disable=not-callable
+        else:
+            return super(EAPMessage, cls).create(data)
+
+    def data(self):
+        from chewie.message_parser import MessageParser
+        return MessageParser.eap_parse(self._data_type.data(), None)
 
 @register_attribute_type
 class MessageAuthenticator(Attribute):
@@ -240,3 +334,12 @@ class TunnelPrivateGroupID(Attribute):
     TYPE = 81
     DATA_TYPE = String
     DESCRIPTION = "Tunnel-Private-Group-ID"
+
+
+# Experimental
+@register_attribute_type
+class NASFilterRule(Attribute):
+    """NAS-Fitler-Rule https://freeradius.org/rfc/rfc4849.html"""
+    TYPE = 92
+    DATA_TYPE = String
+    DESCRIPTION = "NAS-Filter-Rule"

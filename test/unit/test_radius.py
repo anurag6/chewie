@@ -11,7 +11,7 @@ from chewie.radius import Radius, RadiusAccessAccept, RadiusAttributesList, \
     InvalidResponseAuthenticatorError, RadiusAccessChallenge, RadiusAccessRequest
 from chewie.radius_attributes import UserName, ServiceType, FramedMTU, CalledStationId,\
     AcctSessionId, NASPortType, ConnectInfo, EAPMessage, MessageAuthenticator, State,\
-    VendorSpecific, CallingStationId
+    VendorSpecific, CallingStationId, UserPassword
 from chewie.radius_datatypes import Vsa, String, Enum, Text, Integer, Concat
 from chewie.utils import MessageParseError
 
@@ -26,23 +26,23 @@ class RadiusTestCase(unittest.TestCase):
         self.assertEqual(binascii.hexlify(message.authenticator), b"982a0ba06d3557f0dbc8ba6e823822f1")
         msg_attr = message.attributes
         self.assertEqual(len(msg_attr.attributes), 10)
-        self.assertEqual(msg_attr.find(UserName.DESCRIPTION).data_type.data(), 'host1user')
-        self.assertEqual(msg_attr.find(CalledStationId.DESCRIPTION).data_type.data(),
+        self.assertEqual(msg_attr.find(UserName.DESCRIPTION).data(), 'host1user')
+        self.assertEqual(msg_attr.find(CalledStationId.DESCRIPTION).data(),
                          "44-44-44-44-44-44:")
-        self.assertEqual(msg_attr.find(NASPortType.DESCRIPTION).data_type.data(), 19)
-        self.assertEqual(msg_attr.find(ServiceType.DESCRIPTION).data_type.data(), 2)
-        self.assertEqual(msg_attr.find(ConnectInfo.DESCRIPTION).data_type.data(),
+        self.assertEqual(msg_attr.find(NASPortType.DESCRIPTION).data(), 19)
+        self.assertEqual(msg_attr.find(ServiceType.DESCRIPTION).data(), 2)
+        self.assertEqual(msg_attr.find(ConnectInfo.DESCRIPTION).data(),
                          "CONNECT 0Mbps 802.11b")
-        self.assertEqual(msg_attr.find(AcctSessionId.DESCRIPTION).data_type.data(),
+        self.assertEqual(msg_attr.find(AcctSessionId.DESCRIPTION).data(),
                          "C648004A9C905579")
-        self.assertEqual(msg_attr.find(FramedMTU.DESCRIPTION).data_type.data(), 1400)
-        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data_type.data()
+        self.assertEqual(msg_attr.find(FramedMTU.DESCRIPTION).data(), 1400)
+        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data()
         self.assertEqual(eap_msg.message_id, 1)
         self.assertEqual(eap_msg.code, 2)
         self.assertEqual(eap_msg.identity, "host1user")
 
         self.assertEqual(binascii.hexlify(
-            msg_attr.find(MessageAuthenticator.DESCRIPTION).data_type.data()),
+            msg_attr.find(MessageAuthenticator.DESCRIPTION).data()),
                          b"73f82750f6f261a95a7cc7d318b9f573")
 
     def test_radius_access_accept_parses(self):
@@ -55,13 +55,13 @@ class RadiusTestCase(unittest.TestCase):
         self.assertEqual(binascii.hexlify(message.authenticator), b"02970aff2ef0700780f70848e90d2410")
         msg_attr = message.attributes
         self.assertEqual(len(msg_attr.attributes), 4)
-        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data_type.data()
+        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data()
         self.assertEqual(eap_msg.message_id, 2)
         self.assertIsInstance(eap_msg, SuccessMessage)
         self.assertEqual(binascii.hexlify(msg_attr.find(
-            MessageAuthenticator.DESCRIPTION).data_type.data()),
+            MessageAuthenticator.DESCRIPTION).data()),
                          b"d7ec84e8864dd6cd00916c1d5a3cf41b")
-        self.assertEqual(msg_attr.find(UserName.DESCRIPTION).data_type.data(), 'host1user')
+        self.assertEqual(msg_attr.find(UserName.DESCRIPTION).data(), 'host1user')
 
     def test_radius_access_accept_packs(self):
         expected_packed_message = bytes.fromhex("02010046"
@@ -139,15 +139,15 @@ class RadiusTestCase(unittest.TestCase):
         self.assertEqual(binascii.hexlify(message.authenticator), b"56d9280d3e4fed327eb31cf1823f8c24")
         msg_attr = message.attributes
         self.assertEqual(len(msg_attr.attributes), 3)
-        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data_type.data()
+        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data()
         self.assertEqual(eap_msg.code, 1)
         self.assertEqual(eap_msg.message_id, 2)
         self.assertEqual(binascii.hexlify(eap_msg.challenge),
                          b"74d3db089b727d9cc5774599e4a32a29")
         self.assertEqual(binascii.hexlify(msg_attr.find(
-            MessageAuthenticator.DESCRIPTION).data_type.data()),
+            MessageAuthenticator.DESCRIPTION).data()),
                          b"ecc840b316217c851bd6708afb554b24")
-        self.assertEqual(binascii.hexlify(msg_attr.find(State.DESCRIPTION).data_type.data()),
+        self.assertEqual(binascii.hexlify(msg_attr.find(State.DESCRIPTION).data()),
                          b"19ddf6d119dff272fa2fe16c34990c7d")
 
     def test_radius_access_challenge_ttls_parses(self):
@@ -161,7 +161,7 @@ class RadiusTestCase(unittest.TestCase):
         self.assertEqual(binascii.hexlify(message.authenticator), b"54dbc73332c00c0347fc4b462d1811a7")
         msg_attr = message.attributes
         self.assertEqual(len(msg_attr.attributes), 3)
-        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data_type.data()
+        eap_msg = msg_attr.find(EAPMessage.DESCRIPTION).data()
         self.assertEqual(eap_msg.code, 1)
         self.assertEqual(eap_msg.message_id, 106)
         self.assertEqual(eap_msg.flags, 0xc0)
@@ -170,9 +170,9 @@ class RadiusTestCase(unittest.TestCase):
                          b"856e5cd5eed2d10037c9bcce89fbdf927e4cc4f069863acbac4accee7e80f2105ad80d837fa50a931c5b41d03c993f5e338cfd8e69e23818360053501c34c08132ec3d6e14df89ff29c5cec5c7a87d48c4afdcf9d3f8290050be5b903ba6a2a5ce2eb79c922cae70869618c75923059f9a8d62144e8ecdaf0a9f02886afa0e73e3d68037ea9fdca2bdd0f0785e05f5ac88031010c105575dbb09eb4f307547622120ee384ab454376de8e14e0afea02f1211801b6c932324ef6dba7abf3f48f8e3e84716c40b59041ec936cb273d684b22aa1c9d24e10203010001a34f304d30130603551d25040c300a06082b0601050507030130360603551d1f042f"
                          b"302d302ba029a0278625687474703a2f2f7777772e6578616d706c652e636f6d2f6578616d706c655f63612e63726c300d06092a864886f70d01010b0500038201010054fdcdabdc3a153dc167d6b210d1b324ecfac0e3b8d385704463a7f8ebf46e2e6952f249f4436ec66760868860e5ed50b519ec14628179472c312f507bc9349971d21f8f2b7d6b329b02fab448bd90fd4ce4dfbc78f23a8c4eed74d5589f4c3bd11b552535b8ab8a1a6ab9d1dfda21f247a93354702c12fdde1113cb8dd0e46e2a3a94547c9871df2a88943751d8276dc43f7f6aed921f43f6a33f9beba804c3d2b5781d754abe36ba58461798be8585b8b2")
         self.assertEqual(binascii.hexlify(msg_attr.find(
-            MessageAuthenticator.DESCRIPTION).data_type.data()),
+            MessageAuthenticator.DESCRIPTION).data()),
                          b"26e219fc875fd78976eb2b9b475b1488")
-        self.assertEqual(binascii.hexlify(msg_attr.find(State.DESCRIPTION).data_type.data()),
+        self.assertEqual(binascii.hexlify(msg_attr.find(State.DESCRIPTION).data()),
                          b"c1591073c33305b4fa8bd26dd27eafd9")
 
     def test_radius_access_challenge_packs(self):
@@ -333,3 +333,30 @@ class RadiusTestCase(unittest.TestCase):
         concat = Concat(bytes_data=big_concat_bytes)
         packed = concat.pack(EAPMessage.TYPE)
         self.assertEqual(expected_packed, packed)
+
+    def radius_user_password_encrypt(self, expected_password, secret, req_authenticator, expected_ciphertext):
+        ciphertext = UserPassword.encrypt(secret, req_authenticator, expected_password)
+        self.assertEqual(binascii.hexlify(expected_ciphertext), binascii.hexlify(ciphertext),
+                         "RADIUS User-Password encryption not equal %s : %s".format(
+                             binascii.hexlify(expected_ciphertext),
+                             binascii.hexlify(ciphertext)))
+
+        password = UserPassword.decrypt(secret, req_authenticator, ciphertext)
+        self.assertEqual(expected_password, password,
+                         "RADIUS User-Password decryption not equal %s : %s".format(
+                             expected_password, password))
+
+    def test_radius_user_password_short_encrypt(self):
+        expected_password = "microphone"
+        secret = "SECRET"
+        req_authenticator = 0x2761e938199248222da4e9c3af5927dd
+        expected_ciphertext = bytes.fromhex("3279631f3622ec5249304c5e48bd5cae")
+        return self.radius_user_password_encrypt(expected_password, secret, req_authenticator, expected_ciphertext)
+
+    def test_radius_user_password_long_encrypt_decrypt(self):
+        expected_password = "microphoneislongerthan16"
+        secret = "SECRET"
+        req_authenticator = 0x8e929a5727d9cc425cbcb4f24ee2e046
+        expected_ciphertext = bytes.fromhex("7654d755dffbb0d50ef7768e071ab01b5a371ee79883f81209ff482b6556d1fa")
+
+        return self.radius_user_password_encrypt(expected_password, secret, req_authenticator, expected_ciphertext)

@@ -1,15 +1,19 @@
 """Loosely based on RFC4137 'EAP State Machines' with some interpretation"""
 import random
 
-from transitions import Machine, State
+from transitions import State, Machine
 
 from chewie.eap import Eap
 from chewie.event import EventMessageReceived, EventRadiusMessageReceived, EventTimerExpired, \
-    EventPortStatusChange, EventSessionTimeout
+    EventPortStatusChange, EventSessionTimeout, EventPreemptiveEAPResponseMessageReceived
 from chewie.message_parser import SuccessMessage, FailureMessage, EapolStartMessage, \
     IdentityMessage, EapolLogoffMessage, EapMessage
-from chewie.radius_attributes import FilterId, SessionTimeout, TunnelPrivateGroupID
-from chewie.utils import get_logger, log_method, RadiusQueueMessage, EapQueueMessage
+
+# To create a difference between transitions.State and messageparser.EapMessage
+import chewie.radius_attributes as radius_attributes
+from chewie.utils import get_logger, log_method, RadiusQueueMessage, EapQueueMessage, get_random_id
+from chewie.radius import RadiusPacket
+from chewie.state_machines.abstract_state_machine import AbstractStateMachine
 
 
 class Policy:
@@ -95,8 +99,8 @@ class MPassthrough:
     def build_req(self, current_id):
         return IdentityMessage(self.src_mac, current_id, Eap.REQUEST, "")
 
-
-class FullEAPStateMachine:
+# pylint: disable=missing-docstring
+class FullEAPStateMachine(AbstractStateMachine):
     """Based on RFC 4137 section 7 (EAP Full Authenticator).
     Only acts in passthrough mode (no local method support).
     """
@@ -157,121 +161,139 @@ class FullEAPStateMachine:
     LOGOFF = "LOGOFF"
     LOGOFF2 = "LOGOFF2"
 
-    STATES = [State(NO_STATE, 'reset_state'),
-              State(DISABLED, 'disabled_state'),
-              State(INITIALIZE, 'initialize_state'),
-              State(IDLE, 'idle_state'),
-              State(RECEIVED, 'received_state'),
-              State(INTEGRITY_CHECK, 'integrity_check_state'),
-              State(METHOD_RESPONSE, 'method_response_state'),
-              State(METHOD_REQUEST, 'method_request_state'),
-              State(PROPOSE_METHOD, 'propose_method_state'),
-              State(SELECT_ACTION, 'select_action_state'),
-              State(SEND_REQUEST, 'send_request_state'),
-              State(DISCARD, 'discard_state'),
-              State(NAK, 'nak_state'),
-              State(RETRANSMIT, 'retransmit_state'),
-              State(SUCCESS, 'success_state'),
-              State(FAILURE, 'failure_state'),
-              State(TIMEOUT_FAILURE, 'timeout_failure_state'),
-              State(INITIALIZE_PASSTRHOUGH, 'initialize_passthrough_state'),
-              State(IDLE2, 'idle2_state'),
-              State(RECEIVED2, 'received2_state'),
-              State(AAA_IDLE, 'aaa_idle_state'),
-              State(AAA_REQUEST, 'aaa_request_state'),
-              State(AAA_RESPONSE, 'aaa_response_state'),
-              State(SEND_REQUEST2, 'send_request2_state'),
-              State(DISCARD2, 'discard2_state'),
-              State(RETRANSMIT2, 'retransmit2_state'),
-              State(SUCCESS2, 'success2_state'),
-              State(FAILURE2, 'failure2_state'),
-              State(TIMEOUT_FAILURE2, 'timeout_failure2_state'),
-              State(LOGOFF, 'logoff_state'),
-              State(LOGOFF2, 'logoff2_state')
-              ]
+    INITIAL_STATE = DISABLED
 
-    TRANSITIONS = [{'trigger': 'process', 'source': '*', 'dest': DISABLED,
-                    'unless': ['is_port_enabled']},
-                   {'trigger': 'process', 'source': '*', 'dest': INITIALIZE,
-                    'conditions': ['is_port_enabled',
-                                   'is_eap_restart']},
-                   {'trigger': 'process', 'source': DISABLED, 'dest': NO_STATE,
+    SUCCESS_STATES = [
+        State(SUCCESS2, 'success2_state'),
+        State(SUCCESS, 'success_state'),
+    ]
+    FAILURE_STATES = [
+        State(FAILURE2, 'failure2_state'),
+        State(TIMEOUT_FAILURE2, 'timeout_failure2_state'),
+        State(LOGOFF, 'logoff_state'),
+        State(LOGOFF2, 'logoff2_state'),
+        State(FAILURE, 'failure_state'),
+        State(TIMEOUT_FAILURE, 'timeout_failure_state'),
+    ]
+    COMPLETION_STATES = FAILURE_STATES + SUCCESS_STATES
+
+    PROGRESS_STATES = [State(NO_STATE, 'reset_state'),
+                       State(DISABLED, 'disabled_state'),
+                       State(INITIALIZE, 'initialize_state'),
+                       State(IDLE, 'idle_state'),
+                       State(RECEIVED, 'received_state'),
+                       State(INTEGRITY_CHECK, 'integrity_check_state'),
+                       State(METHOD_RESPONSE, 'method_response_state'),
+                       State(METHOD_REQUEST, 'method_request_state'),
+                       State(PROPOSE_METHOD, 'propose_method_state'),
+                       State(SELECT_ACTION, 'select_action_state'),
+                       State(SEND_REQUEST, 'send_request_state'),
+                       State(DISCARD, 'discard_state'),
+                       State(NAK, 'nak_state'),
+                       State(RETRANSMIT, 'retransmit_state'),
+                       State(INITIALIZE_PASSTRHOUGH,
+                             'initialize_passthrough_state'),
+                       State(IDLE2, 'idle2_state'),
+                       State(RECEIVED2, 'received2_state'),
+                       State(AAA_IDLE, 'aaa_idle_state'),
+                       State(AAA_REQUEST, 'aaa_request_state'),
+                       State(AAA_RESPONSE, 'aaa_response_state'),
+                       State(SEND_REQUEST2, 'send_request2_state'),
+                       State(DISCARD2, 'discard2_state'),
+                       State(RETRANSMIT2, 'retransmit2_state'),
+                       ]
+
+    STATES = COMPLETION_STATES + PROGRESS_STATES
+
+    ERROR_TRANSITIONS = [
+        {'trigger': 'process', 'source': '*', 'dest': DISABLED,
+         'unless': ['is_port_enabled']},
+        {'trigger': 'process', 'source': '*', 'dest': INITIALIZE,
+         'conditions': ['is_port_enabled', 'is_eap_restart']},
+    ]
+    CORE_TRANSITIONS = [
+        {'trigger': 'process', 'source': DISABLED, 'dest': NO_STATE,
                     'conditions': ['is_port_enabled']},
-                   {'trigger': 'process', 'source': INITIALIZE, 'dest': SELECT_ACTION},
-                   {'trigger': 'process', 'source': SELECT_ACTION, 'dest': PROPOSE_METHOD,
+        {'trigger': 'process', 'source': INITIALIZE, 'dest': SELECT_ACTION},
+        {'trigger': 'process', 'source': SELECT_ACTION, 'dest': PROPOSE_METHOD,
                     'unless': ['is_decision_failure',
                                'is_decision_passthrough',
                                'is_decision_success']},
-                   {'trigger': 'process', 'source': SELECT_ACTION, 'dest': FAILURE,
+        {'trigger': 'process', 'source': SELECT_ACTION, 'dest': FAILURE,
                     'conditions': ['is_decision_failure']},
-                   {'trigger': 'process', 'source': SELECT_ACTION, 'dest': SUCCESS,
+        {'trigger': 'process', 'source': SELECT_ACTION, 'dest': SUCCESS,
                     'conditions': ['is_decision_success']},
-                   {'trigger': 'process', 'source': SELECT_ACTION, 'dest': INITIALIZE_PASSTRHOUGH,
+        {'trigger': 'process', 'source': SELECT_ACTION, 'dest': INITIALIZE_PASSTRHOUGH,
                     'conditions': ['is_decision_passthrough']},
-                   {'trigger': 'process', 'source': PROPOSE_METHOD, 'dest': METHOD_REQUEST},
-                   {'trigger': 'process', 'source': METHOD_REQUEST, 'dest': SEND_REQUEST},
-                   {'trigger': 'process', 'source': SEND_REQUEST, 'dest': IDLE},
-                   {'trigger': 'process', 'source': IDLE, 'dest': RETRANSMIT,
+        {'trigger': 'process', 'source': PROPOSE_METHOD,
+         'dest': METHOD_REQUEST},
+        {'trigger': 'process', 'source': METHOD_REQUEST,
+         'dest': SEND_REQUEST},
+        {'trigger': 'process', 'source': SEND_REQUEST, 'dest': IDLE},
+        {'trigger': 'process', 'source': IDLE, 'dest': RETRANSMIT,
                     'conditions': ['is_retrans_while_equal_0']},
-                   {'trigger': 'process', 'source': IDLE, 'dest': RECEIVED,
+        {'trigger': 'process', 'source': IDLE, 'dest': RECEIVED,
                     'conditions': ['is_eap_resp']},
-                   {'trigger': 'process', 'source': RETRANSMIT, 'dest': TIMEOUT_FAILURE,
+        {'trigger': 'process', 'source': RETRANSMIT, 'dest': TIMEOUT_FAILURE,
                     'conditions': ['is_retrans_count_greater_max_retrans']},
-                   {'trigger': 'process', 'source': RETRANSMIT, 'dest': IDLE,
+        {'trigger': 'process', 'source': RETRANSMIT, 'dest': IDLE,
                     'unless': ['is_retrans_count_greater_max_retrans']},
-                   {'trigger': 'process', 'source': RECEIVED, 'dest': NAK,
+        {'trigger': 'process', 'source': RECEIVED, 'dest': NAK,
                     'conditions': ['is_enter_nak']},
-                   {'trigger': 'process', 'source': RECEIVED, 'dest': INTEGRITY_CHECK,
+        {'trigger': 'process', 'source': RECEIVED, 'dest': INTEGRITY_CHECK,
                     'conditions': ['is_enter_integrity_check']},
-                   {'trigger': 'process', 'source': RECEIVED, 'dest': DISCARD,
+        {'trigger': 'process', 'source': RECEIVED, 'dest': DISCARD,
                     'unless': ['is_enter_nak', 'is_enter_integrity_check']},
-                   {'trigger': 'process', 'source': DISCARD, 'dest': IDLE},
-                   {'trigger': 'process', 'source': NAK, 'dest': SELECT_ACTION},
-                   {'trigger': 'process', 'source': INTEGRITY_CHECK, 'dest': DISCARD,
+        {'trigger': 'process', 'source': DISCARD, 'dest': IDLE},
+        {'trigger': 'process', 'source': NAK, 'dest': SELECT_ACTION},
+        {'trigger': 'process', 'source': INTEGRITY_CHECK, 'dest': DISCARD,
                     'conditions': ['is_ignore']},
-                   {'trigger': 'process', 'source': INTEGRITY_CHECK, 'dest': METHOD_RESPONSE,
+        {'trigger': 'process', 'source': INTEGRITY_CHECK, 'dest': METHOD_RESPONSE,
                     'unless': ['is_ignore']},
-                   {'trigger': 'process', 'source': METHOD_RESPONSE, 'dest': SELECT_ACTION,
+        {'trigger': 'process', 'source': METHOD_RESPONSE, 'dest': SELECT_ACTION,
                     'conditions': ['is_method_state_equal_end']},
-                   {'trigger': 'process', 'source': METHOD_RESPONSE, 'dest': METHOD_REQUEST,
+        {'trigger': 'process', 'source': METHOD_RESPONSE, 'dest': METHOD_REQUEST,
                     'unless': ['is_method_state_equal_end']},
 
-                   {'trigger': 'process', 'source': INITIALIZE_PASSTRHOUGH, 'dest': AAA_IDLE,
+        {'trigger': 'process', 'source': INITIALIZE_PASSTRHOUGH, 'dest': AAA_IDLE,
                     'conditions': ['is_current_id_none']},
-                   {'trigger': 'process', 'source': INITIALIZE_PASSTRHOUGH, 'dest': AAA_REQUEST,
+        {'trigger': 'process', 'source': INITIALIZE_PASSTRHOUGH, 'dest': AAA_REQUEST,
                     'unless': ['is_current_id_none']},
-                   {'trigger': 'process', 'source': AAA_REQUEST, 'dest': AAA_IDLE},
-                   {'trigger': 'process', 'source': AAA_IDLE, 'dest': TIMEOUT_FAILURE2,
+        {'trigger': 'process', 'source': AAA_REQUEST, 'dest': AAA_IDLE},
+        {'trigger': 'process', 'source': AAA_IDLE, 'dest': TIMEOUT_FAILURE2,
                     'conditions': ['is_aaa_timeout']},
-                   {'trigger': 'process', 'source': AAA_IDLE, 'dest': FAILURE2,
+        {'trigger': 'process', 'source': AAA_IDLE, 'dest': FAILURE2,
                     'conditions': ['is_aaa_fail']},
-                   {'trigger': 'process', 'source': AAA_IDLE, 'dest': SUCCESS2,
+        {'trigger': 'process', 'source': AAA_IDLE, 'dest': SUCCESS2,
                     'conditions': ['is_aaa_success']},
-                   {'trigger': 'process', 'source': AAA_IDLE, 'dest': AAA_RESPONSE,
+        {'trigger': 'process', 'source': AAA_IDLE, 'dest': AAA_RESPONSE,
                     'conditions': ['is_aaa_eap_req']},
-                   {'trigger': 'process', 'source': AAA_IDLE, 'dest': DISCARD2,
+        {'trigger': 'process', 'source': AAA_IDLE, 'dest': DISCARD2,
                     'conditions': ['is_aaa_eap_no_req']},
-                   {'trigger': 'process', 'source': DISCARD2, 'dest': IDLE2},
-                   {'trigger': 'process', 'source': AAA_RESPONSE, 'dest': SEND_REQUEST2},
-                   {'trigger': 'process', 'source': SEND_REQUEST2, 'dest': IDLE2},
-                   {'trigger': 'process', 'source': IDLE2, 'dest': RETRANSMIT2,
+        {'trigger': 'process', 'source': DISCARD2, 'dest': IDLE2},
+        {'trigger': 'process', 'source': AAA_RESPONSE,
+         'dest': SEND_REQUEST2},
+        {'trigger': 'process', 'source': SEND_REQUEST2, 'dest': IDLE2},
+        {'trigger': 'process', 'source': IDLE2, 'dest': RETRANSMIT2,
                     'conditions': ['is_retrans_while_equal_0']},
-                   {'trigger': 'process', 'source': IDLE2, 'dest': RECEIVED2,
+        {'trigger': 'process', 'source': IDLE2, 'dest': RECEIVED2,
                     'conditions': ['is_eap_resp']},
-                   {'trigger': 'process', 'source': RETRANSMIT2, 'dest': TIMEOUT_FAILURE2,
+        {'trigger': 'process', 'source': RETRANSMIT2, 'dest': TIMEOUT_FAILURE2,
                     'conditions': ['is_retrans_count_greater_max_retrans']},
-                   {'trigger': 'process', 'source': RETRANSMIT2, 'dest': IDLE2,
+        {'trigger': 'process', 'source': RETRANSMIT2, 'dest': IDLE2,
                     'unless': ['is_retrans_count_greater_max_retrans']},
-                   {'trigger': 'process', 'source': RECEIVED2, 'dest': AAA_REQUEST,
+        {'trigger': 'process', 'source': RECEIVED2, 'dest': AAA_REQUEST,
                     'conditions': ['is_rx_resp', 'is_resp_id_equal_current_id']},
-                   {'trigger': 'process', 'source': RECEIVED2, 'dest': DISCARD2,
+        {'trigger': 'process', 'source': RECEIVED2, 'dest': DISCARD2,
                     'conditions': ['is_enter_discard2']},
 
-                   {'trigger': 'process', 'source': SUCCESS, 'dest': LOGOFF,
+        {'trigger': 'process', 'source': SUCCESS, 'dest': LOGOFF,
                     'conditions': ['is_logoff']},
-                   {'trigger': 'process', 'source': SUCCESS2, 'dest': LOGOFF2,
+        {'trigger': 'process', 'source': SUCCESS2, 'dest': LOGOFF2,
                     'conditions': ['is_logoff']},
-                   ]
+    ]
+
+    TRANSITIONS = ERROR_TRANSITIONS + CORE_TRANSITIONS
 
     # RFC 4137
     MAX_RETRANS = 5  # Configurable  max for retransmissions before aborting.
@@ -363,6 +385,9 @@ class FullEAPStateMachine:
         self.m = MPassthrough()  # pylint: disable=invalid-name
         self.logger = get_logger(log_prefix)
 
+        self.eap_restart = True
+        self.port_enabled = True
+
     def is_eap_restart(self):
         return self.eap_restart
 
@@ -389,12 +414,12 @@ class FullEAPStateMachine:
 
     def is_enter_nak(self):
         return self.rx_resp and self.resp_id == self.current_id \
-               and (self.resp_method in (MethodState.NAK, MethodState.EXPANDED_NAK)) \
-               and self.method_state == MethodState.PROPOSED
+            and (self.resp_method in (MethodState.NAK, MethodState.EXPANDED_NAK)) \
+            and self.method_state == MethodState.PROPOSED
 
     def is_enter_integrity_check(self):
         return self.rx_resp and self.resp_id == self.current_id \
-               and self.resp_method == self.current_method
+            and self.resp_method == self.current_method
 
     def is_ignore(self):
         return self.ignore
@@ -479,14 +504,8 @@ class FullEAPStateMachine:
         Returns:
             integer"""
         if self.current_id is None:
-            # I'm assuming we cant have ids wrap around in the same series.
-            #  so the 200 provides a large buffer.
-            return random.randint(0, 200)
-        _id = self.current_id + 1
-        # not tested
-        if _id > 255:
-            return random.randint(0, 200)
-        return _id
+            return get_random_id()
+        return max((self.current_id + 1) % 256, 1)
 
     @log_method
     def disabled_state(self):
@@ -610,7 +629,6 @@ class FullEAPStateMachine:
     def received2_state(self):
         self.rx_resp, self.resp_id, self.resp_method = self.parse_eap_resp()
 
-
     @log_method
     def aaa_request_state(self):
         if self.resp_method == MethodState.IDENTITY:
@@ -716,6 +734,15 @@ class FullEAPStateMachine:
         self.aaa_eap_resp = False
         self.aaa_timeout = False
 
+    def strip_eap_from_radius_packet(self, radius):
+        """Build a EventRadiusMessageReceived from a radius message"""
+        eap_msg_attribute = radius.attributes.find(
+            radius_attributes.EAPMessage.DESCRIPTION)
+        eap_msg = eap_msg_attribute.data()
+        state = radius.attributes.find(radius_attributes.State.DESCRIPTION)
+        self.logger.info("radius EAP: %s", eap_msg)
+        return EventRadiusMessageReceived(eap_msg, state, radius.attributes.to_dict())
+
     def event(self, event):
         """Processes an event.
         Output is via the eap/radius queue. and again will be of type ***Message.
@@ -723,6 +750,18 @@ class FullEAPStateMachine:
             event: should have message attribute which is of the ***Message types
             (e.g. SuccessMessage, IdentityMessage,...)
         """
+
+        # TODO remove and refactor code - Just placing here to separate main pipeline for internals of SM
+        if (isinstance(event, EventPreemptiveEAPResponseMessageReceived)
+                and event.preemptive_eap_id != self.current_id):
+            self.logger.info(
+                "Resetting eap due to received response to preemtive request")
+            self.eap_restart = True
+            self.override_current_id = event.preemptive_eap_id
+
+        if isinstance(event, EventRadiusMessageReceived) and isinstance(event.message, RadiusPacket):
+            event = self.strip_eap_from_radius_packet(event.message)
+
         self.lower_layer_reset()
         self.logger.info("full state machine received event: %s", event)
         # 'Lower Layer' shim
@@ -768,13 +807,15 @@ class FullEAPStateMachine:
             self.aaa_eap_resp = False
         # not tested
         elif self.aaa_eap_resp:
-            self.logger.error("aaa_eap_resp is true. but data is false. This should never happen")
+            self.logger.error(
+                "aaa_eap_resp is true. but data is false. This should never happen")
 
         if self.eap_success:
             self.handle_success()
 
         if self.eap_fail:
-            self.logger.info('oh authentication not successful %s', self.src_mac)
+            self.logger.info(
+                'oh authentication not successful %s', self.src_mac)
             self.failure_handler(self.src_mac, str(self.port_id_mac))
 
         if self.eap_logoff:
@@ -791,8 +832,18 @@ class FullEAPStateMachine:
         """Notify the success callback and sets a timer event to expire this session"""
         self.logger.info('Yay authentication successful %s %s',
                          self.src_mac, self.aaa_identity.identity)
+
+        kwargs = {}
+        if self.radius_tunnel_private_group_id:
+            kwargs['vlan_name'] = self.radius_tunnel_private_group_id
+
+        if self.filter_id:
+            kwargs['filter_id'] = self.filter_id
+
         self.auth_handler(self.src_mac, str(self.port_id_mac),
-                          self.session_timeout, self.radius_tunnel_private_group_id, self.filter_id)
+                          self.session_timeout,
+                          **kwargs)
+
         self.aaa_eap_resp_data = None
 
         # new authentication so cancel the old session timeout event
@@ -851,8 +902,9 @@ class FullEAPStateMachine:
         if isinstance(message, EapolStartMessage) or \
                 (self.state in (FullEAPStateMachine.TIMEOUT_FAILURE,
                                 FullEAPStateMachine.TIMEOUT_FAILURE2) and
-                 isinstance(message, EapMessage) and message.code == Eap.RESPONSE
-                ):
+                 isinstance(
+                     message, EapMessage) and message.code == Eap.RESPONSE
+                 ):
             self.eap_restart = True
         elif isinstance(message, EapolLogoffMessage):
             self.logoff = True
@@ -893,14 +945,15 @@ class FullEAPStateMachine:
         self.filter_id = None
 
         if attributes:
-            self.session_timeout = attributes.get(SessionTimeout.DESCRIPTION,
+            self.session_timeout = attributes.get(radius_attributes.SessionTimeout.DESCRIPTION,
                                                   self.DEFAULT_SESSION_TIMEOUT)
-            self.radius_tunnel_private_group_id = attributes.get(TunnelPrivateGroupID.DESCRIPTION,
+            self.radius_tunnel_private_group_id = attributes.get(radius_attributes.TunnelPrivateGroupID.DESCRIPTION,
                                                                  None)
-            self.filter_id = attributes.get(FilterId.DESCRIPTION,
-                                                                 None)
+            self.filter_id = attributes.get(radius_attributes.FilterId.DESCRIPTION,
+                                            None)
             if self.radius_tunnel_private_group_id:
-                self.radius_tunnel_private_group_id = self.radius_tunnel_private_group_id.decode('utf-8')
+                self.radius_tunnel_private_group_id = self.radius_tunnel_private_group_id.decode(
+                    'utf-8')
         # TODO could also set filter-id/vlans/acls here.
 
     def set_timer(self, timeout):
@@ -921,8 +974,8 @@ class FullEAPStateMachine:
                                   FullEAPStateMachine.DISABLED, FullEAPStateMachine.NO_STATE,
                                   FullEAPStateMachine.FAILURE, FullEAPStateMachine.FAILURE2,
                                   FullEAPStateMachine.TIMEOUT_FAILURE,
-                                  FullEAPStateMachine.TIMEOUT_FAILURE2,]
-                                  # FullEAPStateMachine.SUCCESS, FullEAPStateMachine.SUCCESS2]
+                                  FullEAPStateMachine.TIMEOUT_FAILURE2, ]
+        # FullEAPStateMachine.SUCCESS, FullEAPStateMachine.SUCCESS2]
 
     def is_success(self):
         return self.state in [FullEAPStateMachine.SUCCESS, FullEAPStateMachine.SUCCESS2]

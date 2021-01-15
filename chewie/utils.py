@@ -1,5 +1,6 @@
 """Utility Functions"""
 import logging
+import random
 from collections import namedtuple  # pytype: disable=pyi-error
 
 
@@ -11,11 +12,18 @@ def get_logger(logname):
 
 def log_method(method):
     """Generate method for logging"""
+
     def wrapped(self, *args, **kwargs):
         """Method that gets called for logging"""
         self.logger.info('Entering %s' % method.__name__)
         return method(self, *args, **kwargs)
+
     return wrapped
+
+
+def get_random_id():  # pylint: disable=missing-docstring
+    """pick a random 8 bit EAPOL ID - which cannot be 0."""
+    return random.randint(1, 2**8 - 1)
 
 
 class MessageParseError(Exception):

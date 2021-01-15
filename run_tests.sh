@@ -1,21 +1,65 @@
-#!/bin/sh
-# TODO: must be run from chewie root
-pip3 install .
-if [ -z "${TRAVIS_PYTHON_VERSION}" ]; then
-    PYTYPE_TARGET_VERSION=3.6
-else
-    PYTYPE_TARGET_VERSION=$TRAVIS_PYTHON_VERSION
+#!/bin/bash
+FILE_NAME=$(readlink -f "$0")
+set -e  # quit on error
+
+CHEWIE_ROOT=$(dirname "$FILE_NAME")
+
+PIP_INSTALL=0
+UNIT_TEST=0
+CODE_CHECK=0
+INTEGRATION=0
+
+# allow user to skip parts of docker test
+while getopts "nuzi" o $CHEWIE_TESTS; do
+  case "${o}" in
+        n)
+            CODE_CHECK=1
+            ;;
+        u)
+            UNIT_TEST=1
+            ;;
+        i)
+            INTEGRATION=1
+            ;;
+        z)
+            PIP_INSTALL=1
+            ;;
+        *)
+            echo "Provided unsupported option. Exiting with code 1"
+            exit 1
+            ;;
+    esac
+done
+
+# ============================= PIP Install =============================
+if [ "$PIP_INSTALL" == 1 ] ; then
+    echo "=============== Installing Pypi Dependencies ================="
+    pip3 install --upgrade --cache-dir=/var/tmp/pip-cache \
+        -r ${CHEWIE_ROOT}/test-requirements.txt -r ${CHEWIE_ROOT}/requirements.txt
 fi
 
-echo "=============== Running UnitTests ================="
+# ============================= Unit Tests =============================
+if [ "$UNIT_TEST" == 1 ] ; then
+    echo "=============== Running Unit Tests ================="
+    time env PYTHONPATH=${CHEWIE_ROOT} pytest -v --cov=chewie \
+        ${CHEWIE_ROOT}/test/unit/test_*.py
+fi
 
-PYTHONPATH=./ pytest --cov=chewie --cov-report term --cov-report=xml:coverage.xml test/test_*.py || exit 1
+# ============================= Code Checks =============================
+if [ "$CODE_CHECK" == 1 ] ; then
 
-echo "=============== Running PyType ===================="
-pytype -V$PYTYPE_TARGET_VERSION chewie/*py || exit 1
+    echo "=============== Running PyType ===================="
+    time PYTHONPATH=${CHEWIE_ROOT} pytype --config ${CHEWIE_ROOT}/setup.cfg \
+        ${CHEWIE_ROOT}/chewie/*py
 
-cd test/codecheck
-echo "=============== Running Pylint ===================="
-./pylint.sh || exit 1
+    echo "=============== Running Pylint ===================="
+    time ${CHEWIE_ROOT}/test/codecheck/pylint.sh
+fi
 
-exit 0
+# ============================= Integration Tests =============================
+if [ "$INTEGRATION" == 1 ] ; then
+    echo "=============== Running Integration Tests ===================="
+    time docker run -it --rm --privileged --cap-add NET_ADMIN -e CHEWIE_ROOT="/chewie-src/" \
+        -e PIP_INSTALL=1 -v ${CHEWIE_ROOT}:/chewie-src:ro -v /var/tmp/pip-cache:/var/tmp/pip-cache \
+        faucet/test-base bash /chewie-src/docker/run_integration_tests.sh
+fi
